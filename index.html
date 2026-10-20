@@ -46,15 +46,37 @@
 
     var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     var recog = null;
+    var SILENCE_MS = 3000, silenceTimer = null, finalText = '', lastInterim = '', sent = false;
+
+    // 모인 말을 한 번만 LUKA에게 넘기고 듣기를 마친다
+    function flushTranscript() {
+        clearTimeout(silenceTimer);
+        var text = (finalText + lastInterim).trim();
+        finalText = ''; lastInterim = '';
+        if (sent || !text) return;
+        sent = true;
+        send({ luka: 'transcript', text: text });
+        try { recog.stop(); } catch (err) {}
+    }
     if (SR) {
         recog = new SR();
         recog.lang = 'ko-KR';
-        recog.continuous = false;
-        recog.interimResults = false;
-        recog.onstart  = function()  { send({ luka: 'listen-start' }); };
-        recog.onresult = function(e) { send({ luka: 'transcript', text: e.results[0][0].transcript }); };
+        // 말이 멈춘 뒤 SILENCE_MS(3초) 동안 더 말이 없을 때만 전송한다 (잠깐 쉬어도 끊기지 않게)
+        recog.continuous = true;
+        recog.interimResults = true;
+        recog.onstart  = function()  { finalText = ''; sent = false; send({ luka: 'listen-start' }); };
+        recog.onresult = function(e) {
+            var fin = '', interim = '';
+            for (var i = 0; i < e.results.length; i++) {
+                if (e.results[i].isFinal) fin += e.results[i][0].transcript;
+                else interim += e.results[i][0].transcript;
+            }
+            finalText = fin; lastInterim = interim;
+            clearTimeout(silenceTimer);
+            silenceTimer = setTimeout(flushTranscript, SILENCE_MS);
+        };
         recog.onerror  = function(e) { send({ luka: 'listen-error', error: e.error }); };
-        recog.onend    = function()  { send({ luka: 'listen-end' }); };
+        recog.onend    = function()  { clearTimeout(silenceTimer); flushTranscript(); send({ luka: 'listen-end' }); };
     }
 
     window.addEventListener('message', function(e) {
@@ -69,6 +91,7 @@
         if (e.data.luka === 'listen') {
             try { recog.start(); } catch (err) { send({ luka: 'listen-error', error: 'busy' }); }
         } else if (e.data.luka === 'stop-listen') {
+            clearTimeout(silenceTimer); finalText = ''; lastInterim = ''; sent = true;
             recog.abort();
         }
     });
