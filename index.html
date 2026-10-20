@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LUKA</title>
+    <style>
+        html, body { margin: 0; height: 100%; background: #020617; overflow: hidden; }
+        #app { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; }
+        #fallback {
+            display: none; position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+            padding: 10px 18px; border-radius: 20px; background: rgba(6,12,28,0.92);
+            border: 1px solid rgba(0,212,255,0.4); color: #cbd5e1;
+            font: 14px 'Noto Sans KR', sans-serif; z-index: 10;
+        }
+        #fallback a { color: #00d4ff; }
+    </style>
+</head>
+<body>
+    <iframe id="app" allow="microphone; autoplay; clipboard-write"></iframe>
+    <div id="fallback">화면이 열리지 않으면 <a id="direct" target="_top">직접 접속하기</a></div>
+
+    <script>
+    // ── LUKA 웹앱 주소 (배포 ID가 바뀌면 이 두 줄만 수정) ──
+    var LUKA_EXEC = 'https://script.google.com/a/macros/light4u.kr/s/AKfycbwLi8vLZ5Upk2Y9Ny3s8wMXg-L9GI0DyAi75k14dYU0c4P35PyjMHLSfn7KjkdCRxlRog/exec';
+    var LUKA_DEV  = 'https://script.google.com/a/macros/light4u.kr/s/AKfycbyeQo6d5ybnVqL7NAP_OOAEYwhkk7hwTNQ_36nocFEA/dev';
+
+    // ?dev=1 로 열면 테스트(HEAD) 버전
+    var appUrl = /[?&]dev=1/.test(location.search) ? LUKA_DEV : LUKA_EXEC;
+    var frame  = document.getElementById('app');
+    var loaded = false;
+    frame.onload = function() { loaded = true; };
+    frame.src = appUrl;
+    document.getElementById('direct').href = appUrl;
+    setTimeout(function() { if (!loaded) document.getElementById('fallback').style.display = 'block'; }, 6000);
+
+    // =============================================
+    //  음성 브리지
+    //  구글 웹앱 액자에는 마이크 권한이 없어서, 이 바깥 페이지가 대신 듣고
+    //  알아들은 글자를 안쪽 LUKA에게 전달한다. (LUKA가 먼저 hello를 보낸다)
+    // =============================================
+    var GAS_ORIGIN = /^https:\/\/[a-z0-9-]+-script\.googleusercontent\.com$/;
+    var luka = null, lukaOrigin = null;
+
+    function send(msg) { if (luka) luka.postMessage(msg, lukaOrigin); }
+
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    var recog = null;
+    if (SR) {
+        recog = new SR();
+        recog.lang = 'ko-KR';
+        recog.continuous = false;
+        recog.interimResults = false;
+        recog.onstart  = function()  { send({ luka: 'listen-start' }); };
+        recog.onresult = function(e) { send({ luka: 'transcript', text: e.results[0][0].transcript }); };
+        recog.onerror  = function(e) { send({ luka: 'listen-error', error: e.error }); };
+        recog.onend    = function()  { send({ luka: 'listen-end' }); };
+    }
+
+    window.addEventListener('message', function(e) {
+        if (!GAS_ORIGIN.test(e.origin) || !e.data || !e.data.luka) return;
+        if (e.data.luka === 'hello') {
+            luka = e.source;
+            lukaOrigin = e.origin;
+            if (recog) send({ luka: 'bridge-ready' });
+            return;
+        }
+        if (e.source !== luka || !recog) return;
+        if (e.data.luka === 'listen') {
+            try { recog.start(); } catch (err) { send({ luka: 'listen-error', error: 'busy' }); }
+        } else if (e.data.luka === 'stop-listen') {
+            recog.abort();
+        }
+    });
+    </script>
+</body>
+</html>
