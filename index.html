@@ -66,16 +66,37 @@
 
     var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     var recog = null;
-    var SILENCE_MS = 3000, silenceTimer = null, finalText = '', lastInterim = '', sent = false;
+    var SILENCE_MS = 3000, silenceTimer = null, finalText = '', lastInterim = '', lastConf = 1, sent = false;
+
+    // 휴대폰 크롬은 연속 인식에서 같은 말을 "안녕 / 안녕하세요 / 안녕하세요 오늘"처럼 점점 늘려 가며
+    // 여러 번 확정 결과로 보내는 일이 있다. 이어 붙이면 한 문장이 4~5번 반복되므로 겹치는 결과는 하나로 합친다.
+    function dedupeSpeech(list) {
+        var out = [];
+        list.forEach(function (t) {
+            t = String(t || '').replace(/\s+/g, ' ').trim();
+            if (!t) return;
+            var last = out.length ? out[out.length - 1] : '';
+            if (last && t.indexOf(last) === 0) out[out.length - 1] = t;        // 앞 결과가 뒤 결과에 그대로 들어 있으면(누적) 뒤 것으로 교체
+            else if (last && last.indexOf(t) >= 0) { /* 짧은 조각이 이미 들어 있음 → 무시 */ }
+            else if (out.indexOf(t) < 0) out.push(t);                          // 똑같은 문장 반복은 한 번만
+        });
+        return out.join(' ');
+    }
+    // "저녁 메뉴 알려줘 저녁 메뉴 알려줘 저녁 메뉴 알려줘"처럼 통째로 반복된 말은 한 번으로 줄인다
+    function collapseRepeat(text) {
+        var m = String(text).match(/^(.{2,}?)(?:\s*\1)+$/);
+        return m ? m[1].trim() : String(text).trim();
+    }
 
     // 모인 말을 한 번만 LUKA에게 넘기고 듣기를 마친다
     function flushTranscript() {
         clearTimeout(silenceTimer);
-        var text = (finalText + lastInterim).trim();
-        finalText = ''; lastInterim = '';
+        var text = collapseRepeat(dedupeSpeech([finalText, lastInterim]));
+        var conf = lastConf;
+        finalText = ''; lastInterim = ''; lastConf = 1;
         if (sent || !text) return;
         sent = true;
-        send({ luka: 'transcript', text: text });
+        send({ luka: 'transcript', text: text, confidence: conf });
         try { recog.stop(); } catch (err) {}
     }
     if (SR) {
@@ -84,20 +105,28 @@
         // 말이 멈춘 뒤 SILENCE_MS(3초) 동안 더 말이 없을 때만 전송한다 (잠깐 쉬어도 끊기지 않게)
         recog.continuous = true;
         recog.interimResults = true;
-        recog.onstart  = function()  { finalText = ''; sent = false; send({ luka: 'listen-start' }); };
+        recog.onstart  = function()  { finalText = ''; lastInterim = ''; lastConf = 1; sent = false; send({ luka: 'listen-start' }); };
         recog.onresult = function(e) {
-            var fin = '', interim = '';
+            var fin = [], interim = [], conf = 1;
             for (var i = 0; i < e.results.length; i++) {
-                if (e.results[i].isFinal) fin += e.results[i][0].transcript;
-                else interim += e.results[i][0].transcript;
+                if (e.results[i].isFinal) {
+                    fin.push(e.results[i][0].transcript);
+                    var c = e.results[i][0].confidence;
+                    if (typeof c === 'number' && c > 0) conf = Math.min(conf, c);   // 가장 자신 없는 조각 기준
+                } else interim.push(e.results[i][0].transcript);
             }
-            finalText = fin; lastInterim = interim;
+            finalText = dedupeSpeech(fin); lastInterim = dedupeSpeech(interim); lastConf = conf;
             clearTimeout(silenceTimer);
             silenceTimer = setTimeout(flushTranscript, SILENCE_MS);
         };
         recog.onerror  = function(e) { send({ luka: 'listen-error', error: e.error }); };
         recog.onend    = function()  { clearTimeout(silenceTimer); flushTranscript(); send({ luka: 'listen-end' }); };
     }
+
+    // 앱을 다른 화면으로 옮기거나 잠그면 듣기를 멈춘다(켜 둔 채 주변 소리를 명령으로 받는 일 방지)
+    document.addEventListener('visibilitychange', function () {
+        if (document.hidden && recog) { clearTimeout(silenceTimer); finalText = ''; lastInterim = ''; sent = true; try { recog.abort(); } catch (err) {} }
+    });
 
     window.addEventListener('message', function(e) {
         if (!GAS_ORIGIN.test(e.origin) || !e.data || !e.data.luka) return;
