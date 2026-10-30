@@ -4,7 +4,26 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LUKA</title>
+    <meta name="theme-color" content="#0b1533">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="LUKA">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="manifest.webmanifest">
+    <script src="fcm-config.js"></script>
+    <link rel="icon" href="favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
     <style>
+        /* 앱 설치·알림 안내 줄: 필요할 때만 맨 위에 나타나 화면을 아래로 밀어 낸다(안쪽 화면과 겹치지 않게) */
+        #dock { display: none; position: fixed; top: 0; left: 0; right: 0; height: 36px; z-index: 20; box-sizing: border-box;
+            align-items: center; gap: 8px; padding: 0 10px; background: #0b1533; border-bottom: 1px solid rgba(0,212,255,0.35);
+            font: 600 12.5px 'Noto Sans KR', sans-serif; color: #cbd5e1; }
+        #dock.on { display: flex; }
+        #dock .msg { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #dock button { font: 800 11.5px 'Noto Sans KR', sans-serif; background: #00d4ff; color: #04202a; border: 0; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
+        #dock button.x { background: transparent; color: #94a3b8; font-size: 14px; padding: 4px 8px; }
+        body.dock-on #app { top: 36px; height: calc(100% - 36px); }
         html, body { margin: 0; height: 100%; background: #020617; overflow: hidden; }
         #app { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; }
         #fallback {
@@ -17,6 +36,7 @@
     </style>
 </head>
 <body>
+    <div id="dock"><span class="msg" id="dockMsg"></span><button type="button" id="btnInstall" style="display:none">📲 앱 설치</button><button type="button" id="btnPush" style="display:none">🔔 알림 켜기</button><button type="button" class="x" id="btnDockClose" title="닫기">✕</button></div>
     <iframe id="app" allow="microphone; autoplay; clipboard-write"></iframe>
     <div id="fallback">화면이 열리지 않으면 <a id="direct" target="_top">직접 접속하기</a></div>
 
@@ -85,8 +105,10 @@
             luka = e.source;
             lukaOrigin = e.origin;
             if (recog) send({ luka: 'bridge-ready' });
+            onLukaReady();
             return;
         }
+        if (e.source === luka && e.data.luka === 'push-registered') { onPushRegistered(e.data); return; }
         if (e.source !== luka || !recog) return;
         if (e.data.luka === 'listen') {
             try { recog.start(); } catch (err) { send({ luka: 'listen-error', error: 'busy' }); }
@@ -95,6 +117,97 @@
             recog.abort();
         }
     });
+
+    // =============================================
+    //  앱 설치 + 푸시 알림
+    //  - 서비스 워커(sw.js)를 등록하면 크롬이 "앱 설치"를 허용한다.
+    //  - 알림은 fcm-config.js 에 Firebase 공개 설정이 채워져 있을 때만 켠다.
+    //  - 알림 주소(토큰)는 이 페이지가 받아 안쪽 LUKA 에 전달하고, 안쪽이 로그인한 본인 이메일로 등록한다.
+    // =============================================
+    var FCM = self.LUKA_FCM || {};
+    var FCM_READY = !!(FCM.config && FCM.config.apiKey && FCM.vapidKey);
+    var isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    var isStandalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
+    var dock = document.getElementById('dock'), dockMsg = document.getElementById('dockMsg');
+    var btnInstall = document.getElementById('btnInstall'), btnPush = document.getElementById('btnPush');
+    var deferredInstall = null, swReg = null, pendingToken = null, lukaReady = false, pendingOpen = null;
+
+    function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+    function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+    function showDock(text, keep) {
+        dockMsg.textContent = text || '';
+        dock.className = 'on'; document.body.classList.add('dock-on');
+        if (!keep) setTimeout(hideDock, 6000);
+    }
+    function hideDock() { dock.className = ''; document.body.classList.remove('dock-on'); }
+    function refreshDock() {
+        var canPush = FCM_READY && 'Notification' in window && 'serviceWorker' in navigator && (!isIOS || isStandalone) && Notification.permission !== 'granted' && Notification.permission !== 'denied';
+        var canInstall = !isStandalone && !!deferredInstall;
+        var iosHint = isIOS && !isStandalone;
+        btnPush.style.display = canPush ? '' : 'none';
+        btnInstall.style.display = canInstall ? '' : 'none';
+        if (lsGet('lukaDockClosed') && Date.now() - Number(lsGet('lukaDockClosed')) < 7 * 86400000) return;
+        if (canPush || canInstall || iosHint) {
+            showDock(iosHint ? '아이폰은 Safari 공유(□↑) → 홈 화면에 추가 후 앱으로 열면 알림을 켤 수 있습니다.' : (canPush ? '새 업무 메일 등 알림을 받으시겠어요?' : 'LUKA를 앱으로 설치할 수 있습니다.'), true);
+        }
+    }
+    document.getElementById('btnDockClose').onclick = function () { lsSet('lukaDockClosed', String(Date.now())); hideDock(); };
+
+    // 서비스 워커 등록(설치 조건) — 실패해도 화면은 그대로 동작한다
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('sw.js').then(function (reg) { swReg = reg; return navigator.serviceWorker.ready; })
+            .then(function () { if ('Notification' in window && Notification.permission === 'granted' && FCM_READY) fetchToken(false); refreshDock(); })
+            .catch(function (err) { console.warn('서비스 워커 등록 실패', err); });
+        // 알림을 눌렀는데 이미 열려 있는 창이면 서비스 워커가 알려 준다
+        navigator.serviceWorker.addEventListener('message', function (e) { if (e.data && e.data.openLuka) requestOpen(e.data.openLuka); });
+    }
+    window.addEventListener('beforeinstallprompt', function (e) { e.preventDefault(); deferredInstall = e; refreshDock(); });
+    window.addEventListener('appinstalled', function () { deferredInstall = null; showDock('설치되었습니다. 홈 화면의 LUKA 아이콘으로 열어 주세요.'); });
+    btnInstall.onclick = function () {
+        if (!deferredInstall) return;
+        deferredInstall.prompt();
+        deferredInstall.userChoice.finally(function () { deferredInstall = null; btnInstall.style.display = 'none'; });
+    };
+
+    function loadScript(src) {
+        return new Promise(function (ok, no) { var s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = no; document.head.appendChild(s); });
+    }
+    // 알림 주소(FCM 토큰)를 받아 안쪽 LUKA 에게 넘긴다. ask=true 면 권한을 묻는다(사용자가 버튼을 누른 때만)
+    function fetchToken(ask) {
+        if (!FCM_READY || !swReg) return Promise.resolve();
+        var perm = ask ? Notification.requestPermission() : Promise.resolve(Notification.permission);
+        return perm.then(function (p) {
+            if (p !== 'granted') { if (p === 'denied') showDock('알림이 차단되어 있습니다. 브라우저 설정에서 이 사이트의 알림을 허용해 주세요.'); return; }
+            return (window.firebase ? Promise.resolve() : loadScript('https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js').then(function () { return loadScript('https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging-compat.js'); }))
+                .then(function () {
+                    if (!firebase.apps.length) firebase.initializeApp(FCM.config);
+                    return firebase.messaging().getToken({ vapidKey: FCM.vapidKey, serviceWorkerRegistration: swReg });
+                })
+                .then(function (token) {
+                    if (!token) return;
+                    pendingToken = { luka: 'push-token', token: token, label: (isIOS ? 'iPhone' : /android/i.test(navigator.userAgent) ? 'Android' : 'PC') + (isStandalone ? ' 앱' : ' 브라우저') };
+                    flushToken();
+                });
+        }).catch(function (err) { console.warn('알림 주소 받기 실패', err); showDock('알림을 켜지 못했습니다: ' + (err && err.message ? err.message : err)); });
+    }
+    function flushToken() { if (pendingToken && lukaReady) { send(pendingToken); pendingToken = null; } }
+    btnPush.onclick = function () { fetchToken(true); };
+    function onPushRegistered(d) {
+        if (d.ok) { btnPush.style.display = 'none'; showDock(d.message || '알림이 켜졌습니다.'); }
+        else showDock(d.message || '알림을 등록하지 못했습니다.');
+    }
+
+    // 알림을 눌러 들어온 경우(?open=mail 등) 안쪽 LUKA 가 준비되면 해당 화면을 열도록 알려 준다
+    function requestOpen(what) { if (lukaReady) send({ luka: 'open', what: what }); else pendingOpen = what; }
+    function onLukaReady() {
+        lukaReady = true;
+        flushToken();
+        if (pendingOpen) { send({ luka: 'open', what: pendingOpen }); pendingOpen = null; }
+    }
+    var qOpen = (location.search.match(/[?&]open=([^&]+)/) || [])[1];
+    if (qOpen) pendingOpen = decodeURIComponent(qOpen);
+    refreshDock();
     </script>
 </body>
 </html>
