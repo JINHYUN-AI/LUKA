@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LUKA</title>
-    <meta name="theme-color" content="#0b1533">
+    <meta name="theme-color" content="#040810">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="LUKA">
@@ -14,7 +14,34 @@
     <link rel="icon" href="favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+    <link rel="preload" as="image" href="icons/luka-spin.png">
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@900&family=Noto+Sans+KR:wght@500&display=swap" rel="stylesheet">
     <style>
+        /* 처음 실행 로딩 화면: 페이지가 뜨는 첫 순간부터 회전하는 루카를 보여 주고, 안쪽 앱이 준비되면 그대로 앱 화면으로 이어진다 */
+        #intro { position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column; align-items: center; justify-content: center;
+            background: radial-gradient(circle at 50% 42%, #0a1429 0%, #040810 55%, #010204 100%); transition: opacity .6s ease .15s, visibility 0s .8s; }
+        #intro.out { opacity: 0; visibility: hidden; pointer-events: none; }
+        #intro .bh { position: relative; width: min(58vmin, 330px); aspect-ratio: 1; transition: transform .8s cubic-bezier(.55, 0, .9, .35), opacity .7s; }
+        #intro.out .bh { transform: scale(5.5); opacity: 0; }
+        #intro .v { position: absolute; inset: 0; background: url(icons/luka-spin.png) center / contain no-repeat; }
+        #intro .v1 { animation: spin 16s linear infinite; filter: drop-shadow(0 0 26px rgba(0,212,255,.55)); }
+        #intro .v2 { inset: 15%; animation: spin 8s linear infinite reverse; mix-blend-mode: screen; opacity: .85; }
+        #intro .v3 { inset: -14%; filter: blur(26px); opacity: .5; animation: spin 26s linear infinite; }
+        #intro .hole { position: absolute; left: 50%; top: 50%; width: 21%; aspect-ratio: 1; transform: translate(-50%, -50%); border-radius: 50%; background: #000;
+            box-shadow: 0 0 34px 16px #000, 0 0 0 2px rgba(0,212,255,.6), 0 0 28px 5px rgba(0,212,255,.55); animation: hole 2.6s ease-in-out infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes hole { 0%, 100% { transform: translate(-50%, -50%) scale(1); } 50% { transform: translate(-50%, -50%) scale(1.14); } }
+        #intro .dots span { position: absolute; left: 50%; top: 50%; width: 3px; height: 3px; border-radius: 50%; background: #c8f6ff; box-shadow: 0 0 6px #00d4ff; opacity: 0; animation: suck var(--d) linear infinite; animation-delay: var(--dl); }
+        @keyframes suck {
+            0% { transform: rotate(var(--a)) translateX(min(48vmin, 280px)) scale(1); opacity: 0; }
+            15% { opacity: 1; }
+            100% { transform: rotate(calc(var(--a) + 250deg)) translateX(0) scale(.2); opacity: 0; }
+        }
+        #intro .word { margin-top: 26px; font: 900 clamp(28px, 6vw, 44px) 'Orbitron','Noto Sans KR',sans-serif; letter-spacing: .4em; padding-left: .4em;
+            background: linear-gradient(135deg, #fff, #00d4ff 55%, #3b82f6); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+        #intro .prog { margin-top: 22px; width: 280px; max-width: 70vw; height: 4px; border-radius: 99px; background: rgba(238,242,247,.12); overflow: hidden; }
+        #intro .prog i { display: block; height: 100%; width: 0; border-radius: 99px; background: linear-gradient(90deg, #00d4ff, #3b82f6, #ff4fd8); }
+        #intro .stm { margin-top: 12px; font: 500 12px 'Noto Sans KR', sans-serif; color: rgba(238,242,247,.62); min-height: 1.4em; }
         /* 앱 설치·알림 안내 줄: 필요할 때만 맨 위에 나타나 화면을 아래로 밀어 낸다(안쪽 화면과 겹치지 않게) */
         #dock { display: none; position: fixed; top: 0; left: 0; right: 0; height: 36px; z-index: 20; box-sizing: border-box;
             align-items: center; gap: 8px; padding: 0 10px; background: #0b1533; border-bottom: 1px solid rgba(0,212,255,0.35);
@@ -36,21 +63,69 @@
     </style>
 </head>
 <body>
+    <div id="intro" aria-hidden="true">
+        <div class="bh"><div class="v v3"></div><div class="v v1"></div><div class="v v2"></div><div class="dots" id="intro-dots"></div><div class="hole"></div></div>
+        <div class="word">LUKA</div>
+        <div class="prog"><i id="intro-bar"></i></div>
+        <div class="stm" id="intro-msg">환경 구성 중...</div>
+    </div>
     <div id="dock"><span class="msg" id="dockMsg"></span><button type="button" id="btnInstall" style="display:none">📲 앱 설치</button><button type="button" id="btnPush" style="display:none">🔔 알림 켜기</button><button type="button" class="x" id="btnDockClose" title="닫기">✕</button></div>
     <iframe id="app" allow="microphone; autoplay; clipboard-write"></iframe>
     <div id="fallback">화면이 열리지 않으면 <a id="direct" target="_top">직접 접속하기</a></div>
 
     <script>
+
+    // =============================================
+    //  처음 실행 로딩 화면 (안쪽 앱의 준비 완료 신호 'app-ready'를 받으면 100% 후 전환)
+    // =============================================
+    var lukaIntro = (function () {
+        var el = document.getElementById('intro'), bar = document.getElementById('intro-bar'), msg = document.getElementById('intro-msg'), dots = document.getElementById('intro-dots');
+        var MSGS = ['환경 구성 중...', '에이전트 연결 확인 중...', '연동 경로 동기화 중...', '화면 구성 중...'];
+        var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        var t0 = Date.now(), p = 0, mi = 0, finished = false, gone = false, raf = 0;
+        if (!reduce) {
+            var h = '';
+            for (var i = 0; i < 26; i++) h += '<span style="--a:' + Math.round(Math.random() * 360) + 'deg;--d:' + (2.2 + Math.random() * 2.2).toFixed(2) + 's;--dl:-' + (Math.random() * 4).toFixed(2) + 's"></span>';
+            dots.innerHTML = h;
+        }
+        function tick() {
+            if (gone) return;
+            p += ((finished ? 100 : 88) - p) * (finished ? 0.25 : 0.022);
+            bar.style.width = p.toFixed(1) + '%';
+            raf = requestAnimationFrame(tick);
+        }
+        raf = requestAnimationFrame(tick);
+        // 단계 문구는 진행 정도에 맞춰 바뀐다(몇 초 안 되는 짧은 로딩에도 4단계가 보이도록)
+        var msgTimer = setInterval(function () {
+            var n = Math.min(MSGS.length - 1, Math.floor(p / 25));
+            if (n !== mi) { mi = n; msg.textContent = MSGS[mi]; }
+        }, 200);
+        function done() {
+            if (finished) return;
+            var wait = Math.max(0, 1500 - (Date.now() - t0));
+            setTimeout(function () {
+                finished = true; bar.style.width = '100%'; msg.textContent = '준비 완료';
+                setTimeout(function () {
+                    el.classList.add('out');
+                    setTimeout(function () { gone = true; cancelAnimationFrame(raf); clearInterval(msgTimer); el.style.display = 'none'; }, 950);
+                }, 350);
+            }, wait);
+        }
+        setTimeout(done, 12000); // 안전장치: 안쪽 앱이 늦어도 화면은 연다
+        return { done: done };
+    })();
+
     // ── LUKA 웹앱 주소 (배포 ID가 바뀌면 이 두 줄만 수정) ──
     var LUKA_EXEC = 'https://script.google.com/a/macros/light4u.kr/s/AKfycbwLi8vLZ5Upk2Y9Ny3s8wMXg-L9GI0DyAi75k14dYU0c4P35PyjMHLSfn7KjkdCRxlRog/exec';
     var LUKA_DEV  = 'https://script.google.com/a/macros/light4u.kr/s/AKfycbyeQo6d5ybnVqL7NAP_OOAEYwhkk7hwTNQ_36nocFEA/dev';
 
     // ?dev=1 로 열면 테스트(HEAD) 버전
     var appUrl = /[?&]dev=1/.test(location.search) ? LUKA_DEV : LUKA_EXEC;
+    var frameUrl = appUrl + (appUrl.indexOf('?') < 0 ? '?' : '&') + 'bridge=1'; // 안쪽 앱에 "바깥 로딩 화면 사용 중"을 알림
     var frame  = document.getElementById('app');
     var loaded = false;
     frame.onload = function() { loaded = true; };
-    frame.src = appUrl;
+    frame.src = frameUrl;
     document.getElementById('direct').href = appUrl;
     setTimeout(function() { if (!loaded) document.getElementById('fallback').style.display = 'block'; }, 6000);
 
@@ -130,6 +205,7 @@
 
     window.addEventListener('message', function(e) {
         if (!GAS_ORIGIN.test(e.origin) || !e.data || !e.data.luka) return;
+        if (e.data.luka === 'app-ready') { lukaIntro.done(); return; }
         if (e.data.luka === 'hello') {
             luka = e.source;
             lukaOrigin = e.origin;
